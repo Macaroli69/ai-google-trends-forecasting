@@ -1,0 +1,569 @@
+---
+title: "Time Series Analysis of U.S. Google Search Interest in AI Related Terms"
+author: "James Gabbert"
+date: "4/9/2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 5
+)
+
+library(fpp3)
+library(readr)
+library(dplyr)
+library(tidyr)
+
+# --- Load CSV files ---
+ai <- read_csv("Ai Search Term.csv", show_col_types = FALSE) |>
+  rename(AI = Ai)
+
+ai_detection <- read_csv("Ai_Detection Search Term.csv", show_col_types = FALSE) |>
+  rename(`AI detection` = `Ai Detection`)
+
+ai_image_generator <- read_csv("Ai_Image_Generator Search Term.csv", show_col_types = FALSE) |>
+  rename(`AI image generator` = `AI image generator`)
+
+chatgpt <- read_csv("ChatGPT Search Term.csv", show_col_types = FALSE)
+
+# --- Combine datasets ---
+combined_wide <- ai |>
+  left_join(ai_detection, by = "Time") |>
+  left_join(ai_image_generator, by = "Time") |>
+  left_join(chatgpt, by = "Time") |>
+  mutate(Time = as.Date(Time)) |>
+  arrange(Time)
+
+# --- Long format ---
+combined_long <- combined_wide |>
+  pivot_longer(
+    cols = -Time,
+    names_to = "keyword",
+    values_to = "hits"
+  )
+
+# --- Main terms ---
+main_terms <- combined_long |>
+  filter(keyword %in% c("AI", "AI image generator", "AI detection"))
+
+# --- Time series objects ---
+ai_ts <- combined_wide |>
+  transmute(
+    Month = yearmonth(Time),
+    AI = AI
+  ) |>
+  as_tsibble(index = Month)
+
+main_terms_ts <- main_terms |>
+  mutate(Month = yearmonth(Time)) |>
+  select(Month, keyword, hits) |>
+  as_tsibble(key = keyword, index = Month)
+```
+
+# Executive Summary
+
+This report studies monthly U.S. Google Trends data from January 2004 through April 2026 for the search terms **AI**, **AI image generator**, and **AI detection**. The main goal is to study how search interest in AI has changed over time, whether there is meaningful seasonality, and what future search interest may look like.
+
+The data suggest that search interest in AI remained low for many years and then increased sharply in recent years. The broad term **AI** shows the clearest long run growth pattern. The narrower terms **AI image generator** and **AI detection** also increased, but they appear more recent and more event driven.
+
+A major finding is that the full 2004-2026 series is useful for understanding the full history, but most of the important activity happens after 2022. Because of this, the report includes both a full-series analysis and a recent-period analysis using data from 2022 through 2026. The recent-period analysis is more important for forecasting because it focuses on the section where AI search interest actually changed the most.
+
+Using tools from the **fpp3** library, the AI series is explored with plots, decomposition, residual analysis, and forecast models. The results suggest that the main feature of the series is a strong recent upward trend rather than a large stable seasonal pattern. Forecasts indicate that AI search interest is likely to remain elevated in the near future. ARIMA and Drift perform best on the recent data, while ETS has wider uncertainty. Forecast uncertainty remains because the series changed quickly in recent years.
+
+# Introduction
+
+## Research Question
+
+The main research question is:
+
+**How has U.S. search interest in AI changed over time, is there meaningful seasonality, and what can future search interest be forecasted to look like?**
+
+A secondary comparison question is:
+
+**How do the time series patterns differ between “AI,” “AI image generator,” and “AI detection”?**
+
+## Why the Question Is Important
+
+Artificial intelligence has become much more visible in technology, school, business, and public media. Search trend data provide a useful way to measure how public attention changes over time.
+
+## Hypotheses
+
+The hypotheses for this project are:
+
+1. Search interest in AI has a strong upward trend over time.
+2. Seasonal variation is weaker than the long run trend.
+3. A model that accounts for trend and autocorrelation will forecast better than a simple baseline model.
+4. Forecasting the recent section of the series will be more useful than forecasting the entire series because most of the activity starts around 2022.
+
+## Type of Study
+
+This is an **observational study** because the data come from an existing public source and no variables were controlled by the investigator.
+
+## Type of Analysis
+
+This is a **time series analysis** using methods from the **fpp3** framework.
+
+# Data Collection
+
+## Source of Data
+
+The data were downloaded from **Google Trends** for the **United States** at the **monthly** level from January 2004 through April 2026.
+
+## Variables
+
+The variables are:
+
+- `Time`: date of observation
+- `AI`: search interest index for AI
+- `AI image generator`: search interest index for AI image generator
+- `AI detection`: search interest index for AI detection
+- `ChatGPT`: optional extra comparison series
+
+Google Trends values are relative indices, not exact search counts.
+
+## Data Collection Procedure
+
+Four CSV files were downloaded from Google Trends. These files were imported into R, cleaned, and combined into one dataset. The AI series was used as the main forecasting series. The AI image generator and AI detection series were used for comparison.
+
+## Limitations of Data Collection
+
+Some limitations are:
+
+- Google Trends uses relative values instead of raw counts
+- results depend on the exact wording of the search terms
+- public events and product releases can create sudden spikes
+- recent rapid growth may make forecasting less stable
+
+# Summary Information
+
+## Numeric Summary
+
+```{r numeric-summary}
+summary_table <- main_terms |>
+  group_by(keyword) |>
+  summarise(
+    n = n(),
+    mean = mean(hits),
+    median = median(hits),
+    sd = sd(hits),
+    min = min(hits),
+    max = max(hits),
+    .groups = "drop"
+  )
+
+summary_table
+```
+
+## Period Summary
+
+```{r period-summary}
+period_summary <- main_terms |>
+  mutate(period = if_else(year(Time) < 2022, "2004-2021", "2022-2026")) |>
+  group_by(keyword, period) |>
+  summarise(
+    n = n(),
+    mean = mean(hits),
+    median = median(hits),
+    sd = sd(hits),
+    min = min(hits),
+    max = max(hits),
+    .groups = "drop"
+  )
+
+period_summary
+```
+
+These summaries show that average search interest is much higher after 2022 than in the earlier period. This is why the recent section is treated as a main part of the project and not just a small side note.
+
+## Visual Summary
+
+### Comparison Plot
+
+```{r comparison-plot}
+main_terms |>
+  ggplot(aes(x = Time, y = hits, color = keyword)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Monthly U.S. Google Trends Interest for AI Related Terms",
+    x = "Date",
+    y = "Search Interest Index",
+    color = "Series"
+  ) +
+  theme_minimal()
+```
+
+### Faceted Comparison Plot
+
+```{r faceted-comparison}
+main_terms |>
+  ggplot(aes(x = Time, y = hits)) +
+  geom_line(linewidth = 0.8) +
+  facet_wrap(~ keyword, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Comparison of AI Related Search Terms",
+    x = "Date",
+    y = "Search Interest Index"
+  ) +
+  theme_minimal()
+```
+
+### AI Series Plot
+
+```{r ai-series-plot}
+ai_ts |>
+  autoplot(AI) +
+  labs(
+    title = "Monthly U.S. Google Trends Interest for AI",
+    x = "Date",
+    y = "Search Interest Index"
+  )
+```
+
+This full-series plot shows the main problem with the data. From 2004 through about 2021, the AI search series is mostly low and flat. The major change begins around 2022-2023, where search interest rises quickly. Because of this, the full series is helpful for context, but the recent period is the most important part for forecasting.
+
+### Recent AI Series Plot
+
+```{r recent-ai-series-plot}
+recent_ai_ts <- ai_ts |>
+  filter(Month >= yearmonth("2022 Jan"))
+
+recent_ai_ts |>
+  autoplot(AI) +
+  labs(
+    title = "Recent U.S. Google Trends Interest for AI, 2022-2026",
+    x = "Date",
+    y = "Search Interest Index"
+  )
+```
+
+This plot zooms in on the section where most of the activity occurs. This recent period is more useful for understanding the current AI search trend because it removes the long early section where the series was mostly flat.
+
+### Seasonal Plot
+
+```{r seasonal-plot}
+ai_ts |>
+  gg_season(AI) +
+  labs(
+    title = "Seasonal Plot for AI Search Interest",
+    y = "Search Interest Index"
+  )
+```
+
+### Recent Seasonal Plot
+
+```{r recent-seasonal-plot}
+recent_ai_ts |>
+  gg_season(AI) +
+  labs(
+    title = "Recent Seasonal Plot for AI Search Interest, 2022-2026",
+    y = "Search Interest Index"
+  )
+```
+
+The recent seasonal plot is included because any seasonal pattern before 2022 is less useful for the current AI trend. The recent data still appears to be driven more by trend and sudden changes than by a stable month-by-month seasonal pattern.
+
+### Subseries Plot
+
+```{r subseries-plot}
+ai_ts |>
+  gg_subseries(AI) +
+  labs(
+    title = "Subseries Plot for AI Search Interest",
+    y = "Search Interest Index"
+  )
+```
+
+### ACF Plot
+
+```{r acf-plot}
+ai_ts |>
+  ACF(AI) |>
+  autoplot() +
+  labs(title = "ACF for AI Search Interest")
+```
+
+### Recent ACF Plot
+
+```{r recent-acf-plot}
+recent_ai_ts |>
+  ACF(AI) |>
+  autoplot() +
+  labs(title = "Recent ACF for AI Search Interest, 2022-2026")
+```
+
+# Full-Series Analysis
+
+## STL Decomposition
+
+```{r stl-decomposition}
+ai_ts |>
+  model(
+    STL(AI ~ trend(window = 13) + season(window = 3), robust = TRUE)
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "STL Decomposition of AI Search Interest")
+```
+
+This decomposition helps separate the AI series into trend, seasonal, and remainder components. It is useful for checking whether the series is mainly trend driven or whether seasonality plays a major role.
+
+## Training and Test Split
+
+The last 12 months are held out as a test set for forecast comparison.
+
+```{r train-test-split}
+n_total <- nrow(ai_ts)
+train_n <- n_total - 12
+
+ai_train <- ai_ts |> slice(1:train_n)
+ai_test  <- ai_ts |> slice((train_n + 1):n_total)
+
+ai_train
+ai_test
+```
+
+## Fit Forecast Models
+
+```{r fit-models}
+fit_models <- ai_train |>
+  model(
+    Mean = MEAN(AI),
+    Naive = NAIVE(AI),
+    Drift = RW(AI ~ drift()),
+    SNaive = SNAIVE(AI),
+    ETS = ETS(AI),
+    ARIMA = ARIMA(AI)
+  )
+
+report(fit_models)
+```
+
+## Forecast Accuracy
+
+```{r forecast-accuracy}
+fc_test <- fit_models |>
+  forecast(h = 12)
+
+accuracy_table <- accuracy(fc_test, ai_test)
+
+accuracy_table
+```
+
+```{r sorted-accuracy}
+accuracy_table |>
+  arrange(RMSE)
+```
+
+The model with the smallest forecast error and acceptable diagnostics should be selected as the final full-series model. The full-series model comparison is useful, but it may be affected by the long flat section from 2004 through 2021.
+
+## Full-Series ARIMA Diagnostics
+
+```{r full-final-model}
+full_arima_fit <- ai_ts |>
+  model(ARIMA = ARIMA(AI))
+
+report(full_arima_fit)
+```
+
+```{r full-residual-diagnostics}
+gg_tsresiduals(full_arima_fit)
+```
+
+```{r full-ljung-box-test}
+augment(full_arima_fit) |>
+  features(.innov, ljung_box, lag = 24, dof = 0)
+```
+
+The full-series ARIMA model captures some of the overall structure, but the residuals are not perfect white noise. The largest residuals appear near the tail end of the series, where AI search interest changed very quickly. This supports the idea that a recent-period analysis is needed.
+
+# Recent-Period Analysis
+
+## Why Focus on 2022-2026?
+
+The recent period is important because the major growth in AI search interest starts around 2022-2023. The early part of the series is useful for background, but it contains many years where the AI search index was very low. If the full series is used by itself, the model has to fit both a long flat period and a sudden recent increase. That makes residuals worse near the end of the series, which is also the part we care about most.
+
+## Recent STL Decomposition
+
+```{r recent-stl-decomposition}
+recent_ai_ts |>
+  model(
+    STL(AI ~ trend(window = 13) + season(window = 3), robust = TRUE)
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "STL Decomposition of Recent AI Search Interest")
+```
+
+The recent decomposition is used to focus only on the active section of the series. The recent data still appears mostly trend driven, but this plot makes it easier to see whether any repeated seasonal pattern exists after AI became more popular.
+
+## Recent Training and Test Split
+
+Because the recent section is shorter, the last 6 months are held out as a test set.
+
+```{r recent-train-test-split}
+recent_n_total <- nrow(recent_ai_ts)
+recent_train_n <- recent_n_total - 6
+
+recent_train <- recent_ai_ts |> slice(1:recent_train_n)
+recent_test  <- recent_ai_ts |> slice((recent_train_n + 1):recent_n_total)
+
+recent_train
+recent_test
+```
+
+## Recent Forecast Models
+
+The professor suggested checking ETS and ARIMA because this is a univariate time series. I also include a random walk with drift model as a simple trend baseline.
+
+```{r recent-fit-models}
+recent_fit <- recent_train |>
+  model(
+    Drift = RW(AI ~ drift()),
+    ETS = ETS(AI),
+    ARIMA = ARIMA(AI)
+  )
+
+report(recent_fit)
+```
+
+## Recent Forecast Accuracy
+
+```{r recent-forecast-accuracy}
+recent_fc_test <- recent_fit |>
+  forecast(h = 6)
+
+recent_accuracy <- accuracy(recent_fc_test, recent_test)
+
+recent_accuracy
+```
+
+```{r recent-sorted-accuracy}
+recent_accuracy |>
+  arrange(RMSE)
+```
+
+This table compares the recent-period models on the last 6 months of data. The best model should have a low RMSE and MAE.
+
+The ARIMA and Drift models have identical RMSE and MAE values, which suggests that the ARIMA model is effectively behaving like a simple trend model. Because of this, the simpler Drift model may be preferred for interpretation, although ARIMA could still be useful if more complex patterns appear in the future.
+
+The ETS model has slightly higher RMSE and MAE values, indicating that it performs worse on this dataset.
+
+Residual diagnostics are still important, because a model can have good forecast accuracy while still leaving autocorrelation in the residuals. The recent data behaves very differently from earlier years, with rapid growth and increased variability, which supports focusing on the post-2022 period for modeling.
+
+## Recent ETS Residual Diagnostics
+
+```{r recent-ets-residuals}
+recent_fit |>
+  select(ETS) |>
+  gg_tsresiduals()
+```
+
+```{r recent-ets-ljung-box}
+augment(recent_fit |> select(ETS)) |>
+  features(.innov, ljung_box, lag = 12, dof = 0)
+```
+
+## Recent ARIMA Residual Diagnostics
+
+```{r recent-arima-residuals}
+recent_fit |>
+  select(ARIMA) |>
+  gg_tsresiduals()
+```
+
+```{r recent-arima-ljung-box}
+augment(recent_fit |> select(ARIMA)) |>
+  features(.innov, ljung_box, lag = 12, dof = 0)
+```
+
+The recent residual plots are used to check whether the model errors look closer to white noise after removing the long flat early section.
+
+For the ARIMA model, the residuals mostly behave like white noise, with no strong pattern in the time plot. The ACF does not show significant spikes, indicating little remaining autocorrelation. There are a few large residuals, which suggests some outliers in the recent data. Overall, the ARIMA model does a reasonable job, but it is not perfect.
+
+The ETS model is less preferred because it has slightly worse forecast accuracy and wider forecast uncertainty. This makes ARIMA and Drift the stronger choices for this recent period.
+
+## Recent Forecast Plot
+
+```{r recent-final-fit}
+recent_final_fit <- recent_ai_ts |>
+  model(
+    Drift = RW(AI ~ drift()),
+    ETS = ETS(AI),
+    ARIMA = ARIMA(AI)
+  )
+
+recent_future_fc <- recent_final_fit |>
+  forecast(h = "12 months")
+
+recent_future_fc
+```
+
+```{r recent-forecast-plot}
+recent_future_fc |>
+  autoplot(recent_ai_ts) +
+  labs(
+    title = "Recent 12 Month Forecast for U.S. Google Search Interest in AI",
+    x = "Date",
+    y = "Search Interest Index"
+  )
+```
+
+This recent forecast is more targeted than the full-series forecast because it focuses on the time period where AI search interest became active.
+
+The ARIMA and Drift models produce similar forecasts with moderate uncertainty. The ETS model shows much wider prediction intervals, indicating higher uncertainty. This suggests ETS is less stable for this dataset.
+
+Overall, ARIMA and Drift perform best on the recent data. ARIMA is slightly preferred because the residual diagnostics look reasonable, but Drift is also useful because it is simpler and performs almost identically on the test set. However, all models show increasing uncertainty due to the rapid recent growth in AI search interest.
+
+# Comparison of Terms
+
+## Recent Comparison Plot
+
+```{r recent-comparison-plot}
+recent_compare <- main_terms |>
+  filter(Time >= as.Date("2022-01-01"))
+
+recent_compare |>
+  ggplot(aes(x = Time, y = hits, color = keyword)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Recent Comparison of AI Related Search Terms, 2022-2026",
+    x = "Date",
+    y = "Search Interest Index",
+    color = "Series"
+  ) +
+  theme_minimal()
+```
+
+The comparison suggests that the broader AI term has a stronger and more sustained rise, while the narrower search terms appear more tied to recent tools and uses. This recent comparison is important because most of the audience interest is likely in what happened after AI tools became widely visible.
+
+# Conclusions
+
+This report studied monthly U.S. Google Trends data for AI related terms from 2004 through 2026. The results show a strong upward trend in AI search interest, especially in the most recent years. This supports the idea that public interest in AI has increased sharply over time.
+
+The full series is useful for showing the long history of low AI search interest before the recent increase. However, the main activity happens after 2022, so the recent-period analysis is the most important part of the report. The recent zoomed-in plots make the trend easier to see and are more useful for explaining the project to an audience.
+
+The AI image generator and AI detection series also increased, but they behaved in a more sudden and specialized way than the broader AI term. This suggests that general AI interest has become more sustained, while narrower search terms are more tied to specific tools and uses.
+
+Among the forecast models that were tested, ETS and ARIMA were added because the series is univariate and both are common forecasting models for this kind of data. In the recent-period model comparison, ARIMA and Drift performed the best based on RMSE and MAE. ETS performed slightly worse and had much wider forecast intervals, so it appeared less stable for this dataset.
+
+The recent ARIMA residual diagnostics looked reasonable overall. The residuals mostly behaved like white noise, and the ACF did not show large significant spikes. There were still a few large residuals, so the model is not perfect, but it is an improvement over relying only on the full-series model.
+
+The 12 month forecast suggests that AI search interest is likely to remain high in the near future. ARIMA is slightly preferred due to its reasonable residual behavior, while Drift is a strong simple baseline because it performed almost identically on the test set. The prediction intervals widen over time, showing increased uncertainty farther into the forecast horizon. These forecasts should be interpreted carefully because public attention toward AI can change quickly.
+
+A major limitation is that Google Trends values are relative rather than exact search counts. In addition, outside events, media coverage, and technology releases may create sudden changes that are difficult to predict. Future research could include more search terms, compare U.S. and worldwide data, or explore multivariate forecasting models.
+
+
+# References
+
+- Google Trends
+- Hyndman and Athanasopoulos, *Forecasting: Principles and Practice*
+- Course notes and class examples
