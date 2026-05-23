@@ -1,2 +1,7 @@
-# ai-google-trends-forecasting
-Time series analysis and forecasting of U.S. Google Search interest in AI-related terms using R and fpp3.
+# Time Series Analysis of U.S. Google Search Interest in AI-Related Terms
+
+This project analyzes monthly U.S. Google Trends data for AI-related search terms using R, fpp3, and forecasting models.
+
+## View the Full Report
+
+[View Full HTML Report](https://macaroli69.github.io/ai-google-trends-forecasting/)
